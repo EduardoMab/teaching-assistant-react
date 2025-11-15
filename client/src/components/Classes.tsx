@@ -38,6 +38,7 @@ const Classes: React.FC<ClassesProps> = ({
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
   const [selectedForComparison, setSelectedForComparison] = useState<Set<string>>(new Set());
   const [comparisonClasses, setComparisonClasses] = useState<Class[]>([]);
+  const [compareModalError, setCompareModalError] = useState<string>('');
 
   // Load all students for enrollment dropdown
   const loadAllStudents = useCallback(async () => {
@@ -206,6 +207,7 @@ const Classes: React.FC<ClassesProps> = ({
   // Comparison selection handlers
   const handleOpenCompareModal = () => {
     setSelectedForComparison(new Set());
+    setCompareModalError('');
     setIsCompareModalOpen(true);
   };
 
@@ -215,16 +217,35 @@ const Classes: React.FC<ClassesProps> = ({
   };
 
   const handleToggleCompareSelection = (classId: string) => {
+    // Prevent selecting classes without data
+    const classObj = classes.find(c => c.id === classId);
+    if (!classObj) return;
+    if (!classObj.statistics || classObj.statistics.enrolled === 0) {
+      setCompareModalError('Selected class has no statistics and cannot be included.');
+      return;
+    }
+
     const next = new Set(selectedForComparison);
-    if (next.has(classId)) next.delete(classId);
-    else next.add(classId);
+    if (next.has(classId)) {
+      next.delete(classId);
+      setCompareModalError('');
+    } else {
+      next.add(classId);
+      setCompareModalError('');
+    }
     setSelectedForComparison(next);
   };
 
   const handleConfirmComparison = () => {
+    if (selectedForComparison.size < 2) {
+      setCompareModalError('Please select at least 2 classes to compare.');
+      return;
+    }
+
     const chosen = classes.filter(c => selectedForComparison.has(c.id));
     setComparisonClasses(chosen);
     setIsCompareModalOpen(false);
+    setCompareModalError('');
   };
 
   const handleClearComparison = () => {
@@ -516,18 +537,33 @@ const Classes: React.FC<ClassesProps> = ({
               {classes.length === 0 ? (
                 <p>No classes available to compare.</p>
               ) : (
-                <div className="comparison-list">
-                  {classes.map(c => (
-                    <label key={c.id} className={`comparison-item ${selectedForComparison.has(c.id) ? 'selected' : ''}`}>
-                      <input
-                        type="checkbox"
-                        checked={selectedForComparison.has(c.id)}
-                        onChange={() => handleToggleCompareSelection(c.id)}
-                      />
-                      <span className="comparison-item-label">{c.topic} ({c.year}/{c.semester})</span>
-                    </label>
-                  ))}
+                <div>
+                  <p className="compare-instruction">Select at least 2 classes to compare. Classes without data cannot be included.</p>
+                  <div className="comparison-list">
+                    {classes.map(c => {
+                      const noData = !c.statistics || c.statistics.enrolled === 0;
+                      return (
+                        <label
+                          key={c.id}
+                          className={`comparison-item ${selectedForComparison.has(c.id) ? 'selected' : ''} ${noData ? 'no-data' : ''}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedForComparison.has(c.id)}
+                            onChange={() => handleToggleCompareSelection(c.id)}
+                            disabled={noData}
+                          />
+                          <span className="comparison-item-label">{c.topic} ({c.year}/{c.semester})</span>
+                          {noData && <span className="no-data-badge">No data</span>}
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
+              )}
+
+              {compareModalError && (
+                <div className="comparison-error" role="alert">{compareModalError}</div>
               )}
 
               <div className="comparison-actions">
