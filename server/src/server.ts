@@ -1,20 +1,14 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
+import multer from 'multer';
+import * as XLSX from 'xlsx';
 import { StudentSet } from './models/StudentSet';
 import { Student } from './models/Student';
 import { Evaluation } from './models/Evaluation';
 import { Classes } from './models/Classes';
 import { Class } from './models/Class';
-import { Report } from './models/Report';
 import * as fs from 'fs';
 import * as path from 'path';
-import { EspecificacaoDoCalculoDaMedia, DEFAULT_ESPECIFICACAO_DO_CALCULO_DA_MEDIA } from './models/EspecificacaoDoCalculoDaMedia';
-
-// usado para ler arquivos em POST
-const multer = require('multer');
-
-// pasta usada para salvar os upload's feitos
-const upload_dir = multer({dest: 'tmp_data/'})
 
 const app = express();
 const PORT = 3005;
@@ -22,6 +16,14 @@ const PORT = 3005;
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Configure multer for file uploads (in-memory storage)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  }
+});
 
 // In-memory storage with file persistence
 const studentSet = new StudentSet();
@@ -48,7 +50,6 @@ const saveDataToFile = (): void => {
         topic: classObj.getTopic(),
         semester: classObj.getSemester(),
         year: classObj.getYear(),
-        especificacaoDoCalculoDaMedia: classObj.getEspecificacaoDoCalculoDaMedia().toJSON(),
         enrollments: classObj.getEnrollments().map(enrollment => ({
           studentCPF: enrollment.getStudent().getCPF(),
           evaluations: enrollment.getEvaluations().map(evaluation => evaluation.toJSON())
@@ -92,7 +93,7 @@ const loadDataFromFile = (): void => {
       if (data.classes && Array.isArray(data.classes)) {
         data.classes.forEach((classData: any) => {
           try {
-            const classObj = new Class(classData.topic, classData.semester, classData.year, EspecificacaoDoCalculoDaMedia.fromJSON(classData.especificacaoDoCalculoDaMedia));
+            const classObj = new Class(classData.topic, classData.semester, classData.year);
             classes.addClass(classObj);
 
             // Load enrollments for this class
@@ -109,17 +110,6 @@ const loadDataFromFile = (): void => {
                       enrollment.addOrUpdateEvaluation(evaluation.getGoal(), evaluation.getGrade());
                     });
                   }
-                    
-                    // Load medias and attendance status if provided in the data file
-                    if (typeof enrollmentData.mediaPreFinal !== 'undefined') {
-                      enrollment.setMediaPreFinal(enrollmentData.mediaPreFinal);
-                    }
-                    if (typeof enrollmentData.mediaPosFinal !== 'undefined') {
-                      enrollment.setMediaPosFinal(enrollmentData.mediaPosFinal);
-                    }
-                    if (typeof enrollmentData.reprovadoPorFalta !== 'undefined') {
-                      enrollment.setReprovadoPorFalta(Boolean(enrollmentData.reprovadoPorFalta));
-                    }
                 } else {
                   console.error(`Student with CPF ${enrollmentData.studentCPF} not found for enrollment`);
                 }
@@ -136,22 +126,15 @@ const loadDataFromFile = (): void => {
   }
 };
 
-// Test mode flag to disable file persistence
-const isTestMode = process.env.NODE_ENV === 'test';
-
 // Trigger save after any modification (async to not block operations)
 const triggerSave = (): void => {
-  if (!isTestMode) {
-    setImmediate(() => {
-      saveDataToFile();
-    });
-  }
+  setImmediate(() => {
+    saveDataToFile();
+  });
 };
 
-// Load existing data on startup (only in non-test mode)
-if (!isTestMode) {
-  loadDataFromFile();
-}
+// Load existing data on startup
+loadDataFromFile();
 
 // Helper function to clean CPF
 const cleanCPF = (cpf: string): string => {
@@ -301,7 +284,7 @@ app.post('/api/classes', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Topic, semester, and year are required' });
     }
 
-    const classObj = new Class(topic, semester, year, DEFAULT_ESPECIFICACAO_DO_CALCULO_DA_MEDIA);
+    const classObj = new Class(topic, semester, year);
     const newClass = classes.addClass(classObj);
     triggerSave(); // Save to file after adding class
     res.status(201).json(newClass.toJSON());
@@ -406,6 +389,118 @@ app.delete('/api/classes/:classId/enroll/:studentCPF', (req: Request, res: Respo
   }
 });
 
+// POST /api/classes/:classId/enroll-bulk - Bulk enroll students from spreadsheet
+app.post('/api/classes/:classId/enroll-bulk', (req: Request, res: Response) => {
+  upload.single('file')(req, res, (err: any) => {
+    try {
+      // Handle multer errors
+      if (err) {
+        console.error('Multer error:', err);
+        return res.status(400).json({ 
+          error: 'Erro ao processar o arquivo enviado.' 
+        });
+      }
+
+      const { classId } = req.params;
+      
+      // Validation: Check if file was uploaded
+      if (!req.file) {
+        return res.status(400).json({ 
+          error: 'Nenhum arquivo foi enviado. Por favor, envie um arquivo .xlsx ou .csv.' 
+        });
+      }
+
+      // Find the class
+      const classObj = classes.findClassById(classId);
+      if (!classObj) {
+        return res.status(404).json({ error: 'Turma não encontrada' });
+      }
+
+      // Read the spreadsheet from buffer
+      const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+      
+      // Get the first sheet
+      const firstSheetName = workbook.SheetNames[0];
+      if (!firstSheetName) {
+        return res.status(400).json({ 
+          error: 'O arquivo enviado está vazio ou não é suportado (apenas .xlsx ou .csv permitido). Por favor, envie um arquivo com matrículas válidas.' 
+        });
+      }
+      
+      const worksheet = workbook.Sheets[firstSheetName];
+      
+      // Convert to JSON
+      const data: any[] = XLSX.utils.sheet_to_json(worksheet);
+      
+      // Validation: Check if spreadsheet has data
+      if (!data || data.length === 0) {
+        return res.status(400).json({ 
+          error: 'O arquivo enviado está vazio ou não é suportado (apenas .xlsx ou .csv permitido). Por favor, envie um arquivo com matrículas válidas.' 
+        });
+      }
+
+      // Initialize counters
+      let importedCount = 0;
+      let rejectedCount = 0;
+
+      // Process each row
+      for (const row of data) {
+        // Get CPF from the row (try different possible column names)
+        const cpfValue = row.cpf || row.CPF || row.matricula || row.Matricula || row.Matrícula;
+        
+        if (!cpfValue) {
+          continue; // Skip rows without CPF (blank lines)
+        }
+
+        // Clean and convert CPF to string
+        const cpfString = String(cpfValue).trim();
+        const cleanedCPF = cleanCPF(cpfString);
+
+        // Check if student exists
+        const student = studentSet.findStudentByCPF(cleanedCPF);
+        if (!student) {
+          // Student not found in the system - count as rejected
+          rejectedCount++;
+          console.log(`Student ${cleanedCPF} not found in system - rejected`);
+          continue;
+        }
+
+        // Check if student is already enrolled
+        const existingEnrollment = classObj.findEnrollmentByStudentCPF(cleanedCPF);
+        if (existingEnrollment) {
+          continue; // Skip if already enrolled (Scenario 2) - not counted as rejected
+        }
+
+        // Enroll the student (Scenario 1)
+        try {
+          classObj.addEnrollment(student);
+          importedCount++;
+          console.log(`Student ${cleanedCPF} successfully enrolled`);
+        } catch (error) {
+          // Error adding enrollment, count as rejected
+          rejectedCount++;
+          console.error(`Error enrolling student ${cleanedCPF}:`, error);
+        }
+      }
+
+      // Save changes to file
+      triggerSave();
+
+      // Return response with counters
+      res.status(200).json({
+        importedCount,
+        rejectedCount
+      });
+
+    } catch (error) {
+      console.error('Error processing bulk enrollment:', error);
+      res.status(500).json({ 
+        error: 'Erro ao processar o arquivo. Por favor, verifique o formato e tente novamente.' 
+      });
+    }
+  });
+});
+
 // GET /api/classes/:classId/enrollments - Get all enrollments for a class
 app.get('/api/classes/:classId/enrollments', (req: Request, res: Response) => {
   try {
@@ -418,35 +513,6 @@ app.get('/api/classes/:classId/enrollments', (req: Request, res: Response) => {
 
     const enrollments = classObj.getEnrollments();
     res.json(enrollments.map(e => e.toJSON()));
-  } catch (error) {
-    res.status(400).json({ error: (error as Error).message });
-  }
-});
-
-// GET /api/classes/:classId/enrollments/:studentCPF/evaluation - Get the student's average and final average for a class
-app.get('/api/classes/:classId/enrollments/:studentCPF/evaluation', (req: Request, res: Response) => {
-  try {
-    const { classId, studentCPF } = req.params;
-
-    const classObj = classes.findClassById(classId);
-    if (!classObj) {
-      return res.status(404).json({ error: 'Class not found' });
-    }
-
-    const cleanedCPF = cleanCPF(studentCPF);
-    const enrollment = classObj.findEnrollmentByStudentCPF(cleanedCPF);
-    if (!enrollment) {
-      return res.status(404).json({ error: 'Student not enrolled in this class' });
-    }
-
-    const mediaPreFinal = enrollment.getMediaPreFinal();
-    const mediaPosFinal = enrollment.getMediaPosFinal();
-
-    res.json({
-      student: enrollment.getStudent().toJSON(),
-      average: mediaPreFinal,
-      final_average: mediaPosFinal
-    });
   } catch (error) {
     res.status(400).json({ error: (error as Error).message });
   }
@@ -491,55 +557,6 @@ app.put('/api/classes/:classId/enrollments/:studentCPF/evaluation', (req: Reques
   }
 });
 
-// GET /api/classes/:classId/report - Generate statistics report for a class
-app.get('/api/classes/:classId/report', (req: Request, res: Response) => {
-  try {
-    const { classId } = req.params;
-    
-    const classObj = classes.findClassById(classId);
-    if (!classObj) {
-      return res.status(404).json({ error: 'Class not found' });
-    }
-
-    const report = new Report(classObj);
-    res.json(report.toJSON());
-  } catch (error) {
-    res.status(400).json({ error: (error as Error).message });
-  }
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
 });
-
-// POST api/classes/gradeImport/:classId, usado na feature de importacao de grades
-// Vai ser usado em 2 fluxos(poderia ter divido em 2 endpoints mas preferi deixar em apenas 1)
-// [Front] Upload → [Back] lê só o cabeçalho e retorna colunas da planilha e os goals da 'classId'
-// [Front] Mapeia colunas da planilha para os goals → [Back] faz parse completo (stream)
-app.post('/api/classes/gradeImport/:classId', upload_dir.single('file'), async (req: express.Request, res: express.Response) => {
-  res.status(501).json({ error: "Endpoint ainda não implementado." });
-});
-
-// GET /api/classes/:classId/report - Generate statistics report for a class
-app.get('/api/classes/:classId/report', (req: Request, res: Response) => {
-  try {
-    const { classId } = req.params;
-    
-    const classObj = classes.findClassById(classId);
-    if (!classObj) {
-      return res.status(404).json({ error: 'Class not found' });
-    }
-
-    const report = new Report(classObj);
-    res.json(report.toJSON());
-  } catch (error) {
-    res.status(400).json({ error: (error as Error).message });
-  }
-});
-
-
-// Export the app for testing
-export { app, studentSet, classes };
-
-// Only start the server if this file is run directly (not imported for testing)
-if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
-}

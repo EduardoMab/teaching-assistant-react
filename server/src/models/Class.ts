@@ -1,19 +1,16 @@
 import { Student } from './Student';
 import { Enrollment } from './Enrollment';
-import { EspecificacaoDoCalculoDaMedia } from './EspecificacaoDoCalculoDaMedia';
 
 export class Class {
   private topic: string;
   private semester: number;
   private year: number;
-  private readonly especificacaoDoCalculoDaMedia: EspecificacaoDoCalculoDaMedia;
   private enrollments: Enrollment[];
 
-  constructor(topic: string, semester: number, year: number, especificacaoDoCalculoDaMedia: EspecificacaoDoCalculoDaMedia, enrollments: Enrollment[] = []) {
+  constructor(topic: string, semester: number, year: number, enrollments: Enrollment[] = []) {
     this.topic = topic;
     this.semester = semester;
     this.year = year;
-    this.especificacaoDoCalculoDaMedia = especificacaoDoCalculoDaMedia;
     this.enrollments = enrollments;
   }
 
@@ -50,10 +47,6 @@ export class Class {
 
   setYear(year: number): void {
     this.year = year;
-  }
-
-  getEspecificacaoDoCalculoDaMedia(): EspecificacaoDoCalculoDaMedia {
-    return this.especificacaoDoCalculoDaMedia;
   }
 
   // Enrollment management
@@ -100,13 +93,12 @@ export class Class {
       topic: this.topic,
       semester: this.semester,
       year: this.year,
-      especificacaoDoCalculoDaMedia: this.especificacaoDoCalculoDaMedia.toJSON(),
       enrollments: this.enrollments.map(enrollment => enrollment.toJSON())
     };
   }
 
   // Create Class from JSON object
-  static fromJSON(data: { topic: string; semester: number; year: number; especificacaoDoCalculoDaMedia: any, enrollments: any[] }, allStudents: Student[]): Class {
+  static fromJSON(data: { topic: string; semester: number; year: number; enrollments: any[] }, allStudents: Student[]): Class {
     const enrollments = data.enrollments
       ? data.enrollments.map((enrollmentData: any) => {
           const student = allStudents.find(s => s.getCPF() === enrollmentData.student.cpf);
@@ -117,9 +109,6 @@ export class Class {
         })
       : [];
     
-    // Novo carregamento do EspecificacaoDoCalculoDaMedia
-    const especificacaoDoCalculoDaMedia = EspecificacaoDoCalculoDaMedia.fromJSON(data.especificacaoDoCalculoDaMedia);
-
-    return new Class(data.topic, data.semester, data.year, especificacaoDoCalculoDaMedia, enrollments);
+    return new Class(data.topic, data.semester, data.year, enrollments);
   }
 }

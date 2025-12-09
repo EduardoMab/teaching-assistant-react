@@ -1,4 +1,3 @@
-import { EspecificacaoDoCalculoDaMedia } from './EspecificacaoDoCalculoDaMedia';
 import { Enrollment } from './Enrollment';
 
 export interface Class {
@@ -6,7 +5,6 @@ export interface Class {
   topic: string;
   semester: number;
   year: number;
-  especificacaoDoCalculoDaMedia: EspecificacaoDoCalculoDaMedia;
   enrollments: Enrollment[];
 }
 
@@ -14,7 +12,6 @@ export interface CreateClassRequest {
   topic: string;
   semester: number;
   year: number;
-  especificacaoDoCalculoDaMedia: EspecificacaoDoCalculoDaMedia;
 }
 
 export interface UpdateClassRequest {
